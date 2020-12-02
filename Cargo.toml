@@ -1,0 +1,14 @@
+[package]
+name = "libp2p-playground"
+version = "0.1.0"
+authors = ["Honghao Li <im.lihh@outlook.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+libp2p = "0.30"
+tokio = { version = "0.3", features = ["full"] }
+mini-redis = "0.3"
+bytes = "0.6"
+once_cell = "1.5"
