@@ -31,7 +31,7 @@ async fn process(socket: TcpStream) {
     while let Some(frame) = connection.read_frame().await.unwrap() {
         println!("GOT: {:?}", frame);
 
-        if let Ok(db) = DB.lock().as_mut() {
+        if let Ok(ref mut db) = DB.lock() {
             let response = match Command::from_frame(frame).unwrap() {
                 Set(cmd) => {
                     db.insert(cmd.key().to_string(), cmd.value().clone());
