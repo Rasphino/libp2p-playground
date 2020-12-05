@@ -1,8 +1,20 @@
+use std::{cell::RefCell, sync::Mutex};
+
 use floodsub::{Floodsub, FloodsubEvent};
 use futures::prelude::*;
-use libp2p::{Multiaddr, NetworkBehaviour, PeerId, Transport, core::upgrade, floodsub, identity, Swarm, mdns::{TokioMdns, MdnsEvent}, mplex, noise, swarm::NetworkBehaviourEventProcess, swarm::SwarmBuilder, tcp::TokioTcpConfig};
-use slog::{info, o, Drain, Logger};
+use libp2p::{
+    core::upgrade,
+    floodsub, identity,
+    mdns::{MdnsEvent, TokioMdns},
+    mplex, noise,
+    swarm::NetworkBehaviourEventProcess,
+    swarm::SwarmBuilder,
+    tcp::TokioTcpConfig,
+    Multiaddr, NetworkBehaviour, PeerId, Swarm, Transport,
+};
 use once_cell::sync::Lazy;
+use serde::{Deserialize, Serialize};
+use slog::{error, info, o, Drain, Logger};
 use tokio::io::{self, AsyncBufReadExt};
 
 static LOGGER: Lazy<Logger> = Lazy::new(|| {
@@ -14,14 +26,21 @@ static LOGGER: Lazy<Logger> = Lazy::new(|| {
 
 #[derive(NetworkBehaviour)]
 struct MyBehavior {
+    #[behaviour(ignore)]
+    peer_id: PeerId,
     floodsub: Floodsub,
-    mdns: TokioMdns
+    mdns: TokioMdns,
 }
 
 impl NetworkBehaviourEventProcess<FloodsubEvent> for MyBehavior {
     fn inject_event(&mut self, event: FloodsubEvent) {
-        if let FloodsubEvent::Message(message ) = event {
-            info!(LOGGER, "Received: '{:?}' from {:?}", String::from_utf8_lossy(&message.data), message.source);
+        if let FloodsubEvent::Message(message) = event {
+            let sender = message.source;
+            let message: Message =
+                serde_json::from_str(&String::from_utf8_lossy(&message.data)).unwrap();
+            if message.receiver == self.peer_id.to_string() {
+                info!(LOGGER, "Received: '{:?}' from {:?}", message.msg, sender);
+            }
         }
     }
 }
@@ -45,6 +64,12 @@ impl NetworkBehaviourEventProcess<MdnsEvent> for MyBehavior {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+struct Message {
+    receiver: String,
+    msg: String,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     let id_keys = identity::Keypair::generate_ed25519();
@@ -63,18 +88,21 @@ async fn main() -> Result<(), anyhow::Error> {
         .boxed();
 
     let floodsub_topic = floodsub::Topic::new("chat");
-    
+
     let mut swarm = {
         let mdns = TokioMdns::new()?;
         let mut behavior = MyBehavior {
+            peer_id: peer_id.clone(),
             floodsub: Floodsub::new(peer_id.clone()),
-            mdns
+            mdns,
         };
 
         behavior.floodsub.subscribe(floodsub_topic.clone());
 
         SwarmBuilder::new(transport, behavior, peer_id)
-            .executor(Box::new(|fut| { tokio::spawn(fut); }))
+            .executor(Box::new(|fut| {
+                tokio::spawn(fut);
+            }))
             .build()
     };
 
@@ -99,7 +127,20 @@ async fn main() -> Result<(), anyhow::Error> {
             }
         };
         if let Some((topic, line)) = to_publish {
-            swarm.floodsub.publish(topic, line.as_bytes());
+            match &*str::split(&line, ' ').collect::<Vec<_>>() {
+                &[r, m, ..] => {
+                    let message = Message {
+                        receiver: r.to_owned(),
+                        msg: m.to_owned(),
+                    };
+                    swarm
+                        .floodsub
+                        .publish(topic, serde_json::to_string(&message).unwrap());
+                }
+                _ => {
+                    info!(LOGGER, "Invalid input!");
+                }
+            }
         }
         if !listening {
             for addr in Swarm::listeners(&swarm) {
